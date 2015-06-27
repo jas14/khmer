@@ -1,10 +1,12 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2013. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
+from __future__ import division
+from __future__ import print_function
 import sys
 import khmer
 import argparse
@@ -27,21 +29,24 @@ def main():
 
     outfp = open(histout, 'w')
 
-    print 'hashtable from', hashfile
+    print('hashtable from', hashfile)
     ht = khmer.load_counting_hash(hashfile)
 
     hist = {}
 
-
     for i in range(65536):
-       hist[i] = 0
+        hist[i] = 0
 
     for n, record in enumerate(screed.open(seqfile)):
         if n > 0 and n % 100000 == 0:
-            print '...', n
+            print('...', n)
 
         seq = record.sequence.replace('N', 'A')
-        med, _, _ = ht.get_median_count(seq)
+
+        try:
+            med, _, _ = ht.get_median_count(seq)
+        except ValueError:
+            continue
 
         hist[med] = hist[med] + 1
 

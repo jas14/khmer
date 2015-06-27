@@ -1,25 +1,31 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2014. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
 # pylint: disable=missing-docstring,invalid-name
 """
+Sequence trimming by abundance using counting table.
+
 Trim sequences at k-mers of the given abundance, based on the given counting
 hash table.  Output sequences will be placed in 'infile.abundfilt'.
 
-% python scripts/filter-abund.py <counting.kh> <data1> [ <data2> <...> ]
+% python scripts/filter-abund.py <counting.ct> <data1> [ <data2> <...> ]
 
 Use '-h' for parameter help.
 """
+from __future__ import print_function
 import os
 import khmer
 import textwrap
+import argparse
+import sys
 from khmer.thread_utils import ThreadedSequenceProcessor, verbose_loader
-from khmer.khmer_args import (build_counting_args, add_threading_args, info)
-from khmer.file import check_file_status, check_space
+from khmer.khmer_args import (ComboFormatter, add_threading_args, info)
+from khmer.kfile import check_input_files, check_space
+from khmer import __version__
 #
 
 DEFAULT_NORMALIZE_LIMIT = 20
@@ -34,14 +40,15 @@ def get_parser():
 
     Example::
 
-        load-into-counting.py -k 20 -x 5e7 table.kh data/100k-filtered.fa
-        filter-abund.py -C 2 table.kh data/100k-filtered.fa
+        load-into-counting.py -k 20 -x 5e7 table.ct data/100k-filtered.fa
+        filter-abund.py -C 2 table.ct data/100k-filtered.fa
     """
-    parser = build_counting_args(
-        descr='Trim sequences at a minimum k-mer abundance.',
-        epilog=textwrap.dedent(epilog))
-    parser.add_argument('input_table', metavar='input_presence_table_filename',
-                        help='The input k-mer presence table filename')
+    parser = argparse.ArgumentParser(
+        description='Trim sequences at a minimum k-mer abundance.',
+        epilog=textwrap.dedent(epilog),
+        formatter_class=ComboFormatter)
+    parser.add_argument('input_table', metavar='input_counting_table_filename',
+                        help='The input k-mer counting table filename')
     parser.add_argument('input_filename', metavar='input_sequence_filename',
                         help='Input FAST[AQ] sequence filename', nargs='+')
     add_threading_args(parser)
@@ -61,6 +68,10 @@ def get_parser():
                         help='Output the trimmed sequences into a single file '
                         'with the given filename instead of creating a new '
                         'file for each input file.')
+    parser.add_argument('--version', action='version',
+                        version='khmer {v}'.format(v=__version__))
+    parser.add_argument('-f', '--force', default=False, action='store_true',
+                        help='Overwrite output file if it exists')
     return parser
 
 
@@ -68,42 +79,43 @@ def main():
     info('filter-abund.py', ['counting'])
     args = get_parser().parse_args()
 
-    counting_ht = args.input_table
+    check_input_files(args.input_table, args.force)
     infiles = args.input_filename
+    for filename in infiles:
+        check_input_files(filename, args.force)
 
-    for _ in infiles:
-        check_file_status(_)
+    check_space(infiles, args.force)
 
-    check_space(infiles)
-
-    print 'loading hashtable'
-    htable = khmer.load_counting_hash(counting_ht)
+    print('loading counting table:', args.input_table,
+          file=sys.stderr)
+    htable = khmer.load_counting_hash(args.input_table)
     ksize = htable.ksize()
 
-    print "K:", ksize
+    print("K:", ksize, file=sys.stderr)
 
     # the filtering function.
     def process_fn(record):
-        name = record['name']
-        seq = record['sequence']
-        if 'N' in seq:
-            return None, None
+        name = record.name
+        seq = record.sequence
+        seqN = seq.replace('N', 'A')
 
         if args.variable_coverage:  # only trim when sequence has high enough C
-            med, _, _ = htable.get_median_count(seq)
+            med, _, _ = htable.get_median_count(seqN)
             if med < args.normalize_to:
                 return name, seq
 
-        trim_seq, trim_at = htable.trim_on_abundance(seq, args.cutoff)
+        _, trim_at = htable.trim_on_abundance(seqN, args.cutoff)
 
         if trim_at >= ksize:
-            return name, trim_seq
+            # be sure to not to change the 'N's in the trimmed sequence -
+            # so, return 'seq' and not 'seqN'.
+            return name, seq[:trim_at]
 
         return None, None
 
     # the filtering loop
     for infile in infiles:
-        print 'filtering', infile
+        print('filtering', infile, file=sys.stderr)
         if args.single_output_filename != '':
             outfile = args.single_output_filename
             outfp = open(outfile, 'a')
@@ -114,7 +126,7 @@ def main():
         tsp = ThreadedSequenceProcessor(process_fn, n_workers=args.threads)
         tsp.start(verbose_loader(infile), outfp)
 
-        print 'output in', outfile
+        print('output in', outfile, file=sys.stderr)
 
 if __name__ == '__main__':
     main()

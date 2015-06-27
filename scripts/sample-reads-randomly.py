@@ -1,12 +1,14 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This script is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2014. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This script is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
 # pylint: disable=invalid-name,missing-docstring
 """
+Subsample sequences from multiple files.
+
 Take a list of files containing sequences, and subsample 100,000 sequences (-N)
 uniformly, using reservoir sampling.  Stop after first 100m sequences (-M).
 By default take one subsample, but take -S samples if specified.
@@ -15,6 +17,7 @@ By default take one subsample, but take -S samples if specified.
 
 Reads FASTQ and FASTA input, retains format for output.
 """
+from __future__ import print_function
 
 import argparse
 import screed
@@ -24,8 +27,9 @@ import textwrap
 import sys
 
 import khmer
-from khmer.file import check_file_status, check_space
+from khmer.kfile import check_input_files, check_space
 from khmer.khmer_args import info
+from khmer.utils import write_record, broken_paired_reader
 
 DEFAULT_NUM_READS = int(1e5)
 DEFAULT_MAX_READS = int(1e8)
@@ -34,13 +38,13 @@ DEBUG = True
 
 def get_parser():
     epilog = ("""
-    
+
     Take a list of files containing sequences, and subsample 100,000
     sequences (:option:`-N`/:option:`--num_reads`) uniformly, using
     reservoir sampling.  Stop after first 100m sequences
     (:option:`-M`/:option:`--max_reads`). By default take one subsample,
     but take :option:`-S`/:option:`--samples` samples if specified.
-    
+
     The output is placed in :option:`-o`/:option:`--output` <file>
     (for a single sample) or in <file>.subset.0 to <file>.subset.S-1
     (for more than one sample).
@@ -62,19 +66,16 @@ def get_parser():
     parser.add_argument('-S', '--samples', type=int, dest='num_samples',
                         default=1)
     parser.add_argument('-R', '--random-seed', type=int, dest='random_seed')
+    parser.add_argument('--force_single', default=False, action='store_true',
+                        help='Ignore read pair information if present')
     parser.add_argument('-o', '--output', dest='output_file',
                         metavar='output_file',
                         type=argparse.FileType('w'), default=None)
-    parser.add_argument('--version', action='version', version='%(prog)s '
-                        + khmer.__version__)
+    parser.add_argument('--version', action='version', version='%(prog)s ' +
+                        khmer.__version__)
+    parser.add_argument('-f', '--force', default=False, action='store_true',
+                        help='Overwrite output file if it exits')
     return parser
-
-
-def output_single(read):
-    if hasattr(read, 'accuracy'):
-        return "@%s\n%s\n+\n%s\n" % (read.name, read.sequence, read.accuracy)
-    else:
-        return ">%s\n%s\n" % (read.name, read.sequence)
 
 
 def main():
@@ -82,9 +83,9 @@ def main():
     args = get_parser().parse_args()
 
     for _ in args.filenames:
-        check_file_status(_)
+        check_input_files(_, args.force)
 
-    check_space(args.filenames)
+    check_space(args.filenames, args.force)
 
     # seed the random number generator?
     if args.random_seed:
@@ -102,69 +103,82 @@ def main():
         if num_samples > 1:
             sys.stderr.write(
                 "Error: cannot specify -o with more than one sample.")
-            sys.exit(-1)
+            if not args.force:
+                sys.exit(1)
         output_filename = output_file.name
     else:
         filename = args.filenames[0]
         output_filename = os.path.basename(filename) + '.subset'
 
     if num_samples == 1:
-        print 'Subsampling %d reads using reservoir sampling.' % args.num_reads
-        print 'Subsampled reads will be placed in %s' % output_filename
-        print ''
+        print('Subsampling %d reads using reservoir sampling.' %
+              args.num_reads, file=sys.stderr)
+        print('Subsampled reads will be placed in %s' %
+              output_filename, file=sys.stderr)
+        print('', file=sys.stderr)
     else:  # > 1
-        print 'Subsampling %d reads, %d times, using reservoir sampling.' % \
-            (args.num_reads, num_samples)
-        print 'Subsampled reads will be placed in %s.N' % output_filename
-        print ''
+        print('Subsampling %d reads, %d times,'
+              % (args.num_reads, num_samples), ' using reservoir sampling.',
+              file=sys.stderr)
+        print('Subsampled reads will be placed in %s.N'
+              % output_filename, file=sys.stderr)
+        print('', file=sys.stderr)
 
     reads = []
     for n in range(num_samples):
         reads.append([])
 
-    total = 0
-
     # read through all the sequences and load/resample the reservoir
     for filename in args.filenames:
-        print 'opening', filename, 'for reading'
-        for record in screed.open(filename):
-            total += 1
+        print('opening', filename, 'for reading', file=sys.stderr)
+        screed_iter = screed.open(filename, parse_description=False)
 
-            if total % 10000 == 0:
-                print '...', total, 'reads scanned'
-                if total >= args.max_reads:
-                    print 'reached upper limit of %d reads (see -M); exiting' \
-                        % args.max_reads
+        for count, (_, ispair, rcrd1, rcrd2) in enumerate(broken_paired_reader(
+                screed_iter,
+                force_single=args.force_single)):
+            if count % 10000 == 0:
+                print('...', count, 'reads scanned', file=sys.stderr)
+                if count >= args.max_reads:
+                    print('reached upper limit of %d reads' %
+                          args.max_reads, '(see -M); exiting', file=sys.stderr)
                     break
 
             # collect first N reads
-            if total <= args.num_reads:
+            if count < args.num_reads:
                 for n in range(num_samples):
-                    reads[n].append(record)
+                    reads[n].append((rcrd1, rcrd2))
             else:
+                assert len(reads[n]) <= count
+
                 # use reservoir sampling to replace reads at random
                 # see http://en.wikipedia.org/wiki/Reservoir_sampling
 
                 for n in range(num_samples):
-                    guess = random.randint(1, total)
+                    guess = random.randint(1, count)
                     if guess <= args.num_reads:
-                        reads[n][guess - 1] = record
+                        reads[n][guess - 1] = (rcrd1, rcrd2)
 
     # output all the subsampled reads:
     if len(reads) == 1:
-        print 'Writing %d sequences to %s' % (len(reads[0]), output_filename)
+        print('Writing %d sequences to %s' %
+              (len(reads[0]), output_filename), file=sys.stderr)
         if not output_file:
             output_file = open(output_filename, 'w')
 
-        for record in reads[0]:
-            output_file.write(output_single(record))
+        for records in reads[0]:
+            write_record(records[0], output_file)
+            if records[1] is not None:
+                write_record(records[1], output_file)
     else:
         for n in range(num_samples):
             n_filename = output_filename + '.%d' % n
-            print 'Writing %d sequences to %s' % (len(reads[n]), n_filename)
+            print('Writing %d sequences to %s' %
+                  (len(reads[n]), n_filename), file=sys.stderr)
             output_file = open(n_filename, 'w')
-            for record in reads[n]:
-                output_file.write(output_single(record))
+            for records in reads[n]:
+                write_record(records[0], output_file)
+                if records[1] is not None:
+                    write_record(records[1], output_file)
 
 if __name__ == '__main__':
     main()

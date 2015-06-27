@@ -1,8 +1,10 @@
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2013. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt. Contact: ctb@msu.edu
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE. Contact: ctb@msu.edu
 #
+from __future__ import print_function
+
 import khmer
 from nose.tools import assert_almost_equals
 
@@ -13,9 +15,9 @@ def eq_(v1, v2):
 
 
 def test_alignnocov():
-    ch = khmer.new_counting_hash(10, 1048576, 1)
+    ch = khmer.CountingHash(10, 1048576, 1)
     read = "ACCTAGGTTCGACATGTACC"
-    aligner = khmer.new_readaligner(ch, 0, 0)
+    aligner = khmer.ReadAligner(ch, 0, 0)
     for i in range(20):
         ch.consume("AGAGGGAAAGCTAGGTTCGACAAGTCCTTGACAGAT")
     ch.consume("ACCTAGGTTCGACATGTACC")
@@ -27,8 +29,8 @@ def test_alignnocov():
 
 
 def test_simple_readalign():
-    ch = khmer.new_counting_hash(10, 1048576, 1)
-    aligner = khmer.new_readaligner(ch, 2, 0)
+    ch = khmer.CountingHash(10, 1048576, 1)
+    aligner = khmer.ReadAligner(ch, 2, 0)
     for i in range(20):
         ch.consume("AGAGGGAAAGCTAGGTTCGACATGTCCTTGACAGAT")
     read = "ACCTAGGTTCGACAAGTACC"
@@ -46,8 +48,8 @@ def test_simple_readalign():
 
 
 def test_readalign():
-    ch = khmer.new_counting_hash(10, 1048576, 1)
-    aligner = khmer.new_readaligner(ch, 1, 0)
+    ch = khmer.CountingHash(10, 1048576, 1)
+    aligner = khmer.ReadAligner(ch, 1, 0)
     for i in range(20):
         ch.consume("AGAGGGAAAGCTAGGTTCGACAAGTCCTTGACAGAT")
     read = "ACCTAGGTTCGACATGTACC"
@@ -207,15 +209,15 @@ queries = [
 
 
 def test_readalign_new():
-    ch = khmer.new_counting_hash(32, 1048576, 1)
-    aligner = khmer.new_readaligner(ch, 1, 0)
+    ch = khmer.CountingHash(32, 1048576, 1)
+    aligner = khmer.ReadAligner(ch, 1, 0)
     for seq in ht_seqs:
         ch.consume(seq)
 
     for query in queries:
         score, graphAlign, readAlign, trunc = aligner.align(query["seq"])
-        print graphAlign
-        print readAlign
+        print(graphAlign)
+        print(readAlign)
         eq_(graphAlign, query["graph_aln"])
         eq_(readAlign, query["read_aln"])
         eq_(trunc, query["truncated"])

@@ -1,19 +1,18 @@
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2010-2014. It is licensed under
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2010-2015. It is licensed under
 # the three-clause BSD license; see doc/LICENSE.txt.
 # Contact: khmer-project@idyll.org
 #
-"""
-This is khmer; please see http://khmer.readthedocs.org/.
-"""
+"""This is khmer; please see http://khmer.readthedocs.org/."""
 
-from khmer._khmer import _new_counting_hash
-from khmer._khmer import _new_hashbits
-from khmer._khmer import set_reporting_callback
-from khmer._khmer import _LabelHash
-from khmer._khmer import _Hashbits
-from khmer._khmer import new_readaligner  # sandbox/{ec,error-correct-pass2}.py
+from __future__ import print_function
+
+from khmer._khmer import CountingHash as _CountingHash
+from khmer._khmer import LabelHash as _LabelHash
+from khmer._khmer import Hashbits as _Hashbits
+from khmer._khmer import HLLCounter as _HLLCounter
+from khmer._khmer import ReadAligner
 
 from khmer._khmer import forward_hash  # figuregen/*.py
 # tests/test_{functions,counting_hash,labelhash,counting_single}.py
@@ -27,15 +26,17 @@ from khmer._khmer import forward_hash_no_rc  # tests/test_functions.py
 from khmer._khmer import reverse_hash  # tests/test_functions.py
 # tests/counting_single.py
 
-from khmer._khmer import get_config  # tests/test_read_parsers.py
-# tests/test_khmer_config.py
-# scripts/{filter-abund-single,load-graph}.py
-# scripts/{abundance-dist-single,load-into-counting}.py
+from khmer._khmer import hash_murmur3        # tests/test_functions.py
+from khmer._khmer import hash_no_rc_murmur3  # tests/test_functions.py
+
+from khmer._khmer import get_version_cpp as __version_cpp__
+# tests/test_version.py
 
 from khmer._khmer import ReadParser  # sandbox/to-casava-1.8-fastq.py
 # tests/test_read_parsers.py,scripts/{filter-abund-single,load-graph}.py
 # scripts/{abundance-dist-single,load-into-counting}.py
 
+import sys
 
 from struct import pack, unpack
 
@@ -44,43 +45,13 @@ __version__ = get_versions()['version']
 del get_versions
 
 
-def new_hashbits(k, starting_size, n_tables=2):
-    """Return a new hashbits object. Deprecated.
-
-    This factory method is deprecated in favor of creating a Hashbits object
-    directly via 'new Hashbits(...)'.
-
-    Keyword argument:
-    k -- kmer size to use
-    starting_size -- lower bound on hashsize to use
-    n_tables -- number of hash tables to use (default = 2)
-    """
-    primes = get_n_primes_above_x(n_tables, starting_size)
-
-    return _new_hashbits(k, primes)
-
-
-def new_counting_hash(k, starting_size, n_tables=2, n_threads=1):
-    """Return a new countinghash object.
-
-    Keyword arguments:
-    k -- kmer size to use
-    starting_size -- lower bound on hashsize to use
-    n_tables -- number of hash tables to use (default = 2)
-    n_threads  -- number of simultaneous threads to execute (default = 1)
-    """
-    primes = get_n_primes_above_x(n_tables, starting_size)
-
-    return _new_counting_hash(k, primes, n_threads)
-
-
 def load_hashbits(filename):
     """Load a hashbits object from the given filename and return it.
 
     Keyword argument:
     filename -- the name of the hashbits file
     """
-    hashtable = _new_hashbits(1, [1])
+    hashtable = _Hashbits(1, [1])
     hashtable.load(filename)
 
     return hashtable
@@ -92,20 +63,10 @@ def load_counting_hash(filename):
     Keyword argument:
     filename -- the name of the counting_hash file
     """
-    hashtable = _new_counting_hash(1, [1])
+    hashtable = _CountingHash(1, [1])
     hashtable.load(filename)
 
     return hashtable
-
-
-def _default_reporting_callback(info, n_reads, other):
-    print '...', info, n_reads, other
-
-
-def reset_reporting_callback():
-    set_reporting_callback(_default_reporting_callback)
-
-reset_reporting_callback()
 
 
 def extract_hashbits_info(filename):
@@ -120,6 +81,7 @@ def extract_hashbits_info(filename):
     ksize = None
     n_tables = None
     table_size = None
+    signature = None
     version = None
     ht_type = None
 
@@ -127,12 +89,19 @@ def extract_hashbits_info(filename):
     uchar_size = len(pack('B', 0))
     ulonglong_size = len(pack('Q', 0))
 
-    with open(filename, 'rb') as hashbits:
-        version, = unpack('B', hashbits.read(1))
-        ht_type, = unpack('B', hashbits.read(1))
-        ksize, = unpack('I', hashbits.read(uint_size))
-        n_tables, = unpack('B', hashbits.read(uchar_size))
-        table_size, = unpack('Q', hashbits.read(ulonglong_size))
+    try:
+        with open(filename, 'rb') as hashbits:
+            signature, = unpack('4s', hashbits.read(4))
+            version, = unpack('B', hashbits.read(1))
+            ht_type, = unpack('B', hashbits.read(1))
+            ksize, = unpack('I', hashbits.read(uint_size))
+            n_tables, = unpack('B', hashbits.read(uchar_size))
+            table_size, = unpack('Q', hashbits.read(ulonglong_size))
+        if signature != b"OXLI":
+            raise ValueError("Node graph '{}' is missing file type "
+                             "signature".format(filename) + str(signature))
+    except:
+        raise ValueError("Presence table '{}' is corrupt ".format(filename))
 
     return ksize, round(table_size, -2), n_tables, version, ht_type
 
@@ -149,6 +118,7 @@ def extract_countinghash_info(filename):
     ksize = None
     n_tables = None
     table_size = None
+    signature = None
     version = None
     ht_type = None
     use_bigcount = None
@@ -156,20 +126,28 @@ def extract_countinghash_info(filename):
     uint_size = len(pack('I', 0))
     ulonglong_size = len(pack('Q', 0))
 
-    with open(filename, 'rb') as countinghash:
-        version, = unpack('B', countinghash.read(1))
-        ht_type, = unpack('B', countinghash.read(1))
-        use_bigcount, = unpack('B', countinghash.read(1))
-        ksize, = unpack('I', countinghash.read(uint_size))
-        n_tables, = unpack('B', countinghash.read(1))
-        table_size, = unpack('Q', countinghash.read(ulonglong_size))
+    try:
+        with open(filename, 'rb') as countinghash:
+            signature, = unpack('4s', countinghash.read(4))
+            version, = unpack('B', countinghash.read(1))
+            ht_type, = unpack('B', countinghash.read(1))
+            use_bigcount, = unpack('B', countinghash.read(1))
+            ksize, = unpack('I', countinghash.read(uint_size))
+            n_tables, = unpack('B', countinghash.read(1))
+            table_size, = unpack('Q', countinghash.read(ulonglong_size))
+        if signature != b'OXLI':
+            raise ValueError("Counting table '{}' is missing file type "
+                             "signature. ".format(filename) + str(signature))
+    except:
+        raise ValueError("Counting table '{}' is corrupt ".format(filename))
 
     return ksize, round(table_size, -2), n_tables, use_bigcount, version, \
         ht_type
 
 
-def calc_expected_collisions(hashtable):
+def calc_expected_collisions(hashtable, force=False, max_false_pos=.2):
     """Do a quick & dirty expected collision rate calculation on a hashtable.
+    Check to see that collision rate is within threshold.
 
     Keyword argument:
     hashtable: the hashtable object to inspect
@@ -182,11 +160,29 @@ def calc_expected_collisions(hashtable):
     fp_one = occupancy / min_size
     fp_all = fp_one ** n_ht
 
+    if fp_all > max_false_pos:
+        print("**", file=sys.stderr)
+        print("** ERROR: the graph structure is too small for ",
+              file=sys.stderr)
+        print("** this data set.  Increase data structure size",
+              file=sys.stderr)
+        print("** with --max_memory_usage/-M.", file=sys.stderr)
+        print("**", file=sys.stderr)
+        print("** Do not use these results!!", file=sys.stderr)
+        print("**", file=sys.stderr)
+        print("** (estimated false positive rate of %.3f;" % fp_all,
+              file=sys.stderr)
+        print("max allowable %.3f" % max_false_pos, file=sys.stderr)
+        print("**", file=sys.stderr)
+
+        if not force:
+            sys.exit(1)
+
     return fp_all
 
 
 def is_prime(number):
-    '''Checks if a number is prime.'''
+    """Check if a number is prime."""
     if number < 2:
         return False
     if number == 2:
@@ -200,13 +196,18 @@ def is_prime(number):
 
 
 def get_n_primes_near_x(number, target):
-    ''' Step backwards until a number of primes (other than 2) have been
+    """Backward-find primes smaller than target.
+
+    Step backwards until a number of primes (other than 2) have been
     found that are smaller than the target and return them.
 
     Keyword arguments:
     number -- the number of primes to find
     target -- the number to step backwards from
-    '''
+    """
+    if target == 1 and number == 1:
+        return [1]
+
     primes = []
     i = target - 1
     if i % 2 == 0:
@@ -215,48 +216,74 @@ def get_n_primes_near_x(number, target):
         if is_prime(i):
             primes.append(i)
         i -= 2
+
+    if len(primes) != number:
+        raise Exception("unable to find %d prime numbers < %d" % (number,
+                                                                  target))
+
     return primes
 
 
-def get_n_primes_above_x(number, target):
-    '''Step forwards until a number of primes (other than 2) have been
-    found that are smaller than the target and return them.
+# Expose the cpython objects with __new__ implementations.
+# These constructors add the functionality provided by the existing
+# factory methods to the constructors defined over in cpython land.
+# Additional functionality can be added to these classes as appropriate.
 
-    Keyword arguments:
-    number -- the number of primes to find
-    target -- the number to step forwards from
-    '''
-    primes = []
-    i = target + 1
-    if i % 2 == 0:
-        i += 1
-    while len(primes) != number and i > 0:
-        if is_prime(i):
-            primes.append(i)
-        i += 2
-    return primes
 
-'''
-Expose the cpython objects with __new__ implementations.
-These constructors add the functionality provided by the existing
-factory methods to the constructors defined over in cpython land.
-Additional functionality can be added to these classes as appropriate.
-'''
+class CountingHash(_CountingHash):
+
+    def __new__(cls, k, starting_size, n_tables):
+        primes = get_n_primes_near_x(n_tables, starting_size)
+        c = _CountingHash.__new__(cls, k, primes)
+        c.primes = primes
+        return c
 
 
 class LabelHash(_LabelHash):
 
     def __new__(cls, k, starting_size, n_tables):
-        primes = get_n_primes_above_x(n_tables, starting_size)
-        c = _LabelHash.__new__(cls, k, primes)
-        c.primes = primes
+        hb = Hashbits(k, starting_size, n_tables)
+        c = _LabelHash.__new__(cls, hb)
+        c.graph = hb
+        return c
+
+
+class CountingLabelHash(_LabelHash):
+
+    def __new__(cls, k, starting_size, n_tables):
+        primes = get_n_primes_near_x(n_tables, starting_size)
+        hb = _CountingHash(k, primes)
+        c = _LabelHash.__new__(cls, hb)
+        c.graph = hb
         return c
 
 
 class Hashbits(_Hashbits):
 
     def __new__(cls, k, starting_size, n_tables):
-        primes = get_n_primes_above_x(n_tables, starting_size)
+        primes = get_n_primes_near_x(n_tables, starting_size)
         c = _Hashbits.__new__(cls, k, primes)
         c.primes = primes
         return c
+
+
+class HLLCounter(_HLLCounter):
+
+    """HyperLogLog counter.
+
+    A HyperLogLog counter is a probabilistic data structure specialized on
+    cardinality estimation.
+    There is a precision/memory consumption trade-off: error rate determines
+    how much memory is consumed.
+
+    # Creating a new HLLCounter:
+
+    >>> khmer.HLLCounter(error_rate, ksize)
+
+    where the default values are:
+      - error_rate: 0.01
+      - ksize: 20
+    """
+
+    def __len__(self):
+        return self.estimate_cardinality()

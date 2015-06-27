@@ -1,16 +1,14 @@
 //
-// This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-// Copyright (C) Michigan State University, 2009-2013. It is licensed under
-// the three-clause BSD license; see doc/LICENSE.txt.
+// This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+// Copyright (C) Michigan State University, 2009-2015. It is licensed under
+// the three-clause BSD license; see LICENSE.
 // Contact: khmer-project@idyll.org
 //
 
 #include <fcntl.h>
 
-#include <cassert>
-
 #include "trace_logger.hh"
-
+#include "khmer_exception.hh"
 
 namespace khmer
 {
@@ -21,7 +19,9 @@ TraceLogger::
 TraceLogger( uint8_t const level, FILE * stream_handle )
     : _level( level ), _shared_stream( true ), _stream_handle( stream_handle )
 {
-    assert( NULL != stream_handle );
+    if( !(NULL != stream_handle) ) {
+        throw khmer_exception();
+    }
 }
 #endif
 

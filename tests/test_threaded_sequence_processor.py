@@ -1,10 +1,15 @@
 import sys
 from khmer.thread_utils import ThreadedSequenceProcessor, SequenceGroup
-from cStringIO import StringIO
+from io import StringIO
 from screed.fasta import fasta_iter
 from screed.fastq import fastq_iter
-import Queue
 from nose.plugins.attrib import attr
+
+# stdlib queue module was renamed on Python 3
+try:
+    import queue
+except ImportError:
+    import Queue as queue
 
 
 def load_records(stringio_fp):
@@ -60,15 +65,15 @@ def test_basic():
 def test_basic_fastq_like():
     tsp = ThreadedSequenceProcessor(idem, 1, 1, verbose=False)
 
-    input = [dict(name='a', sequence='AAA', accuracy='###'),
-             dict(name='b', sequence='TTT', accuracy='###'), ]
+    input = [dict(name='a', sequence='AAA', quality='###'),
+             dict(name='b', sequence='TTT', quality='###'), ]
     outfp = StringIO()
 
     tsp.start(input, outfp)
 
     x = load_records_fastq(outfp)
     for i in x:
-        assert i['accuracy'] == '###'
+        assert i['quality'] == '###'
 
 
 def test_odd():
@@ -111,7 +116,7 @@ def test_paired_2thread():
             while not self.done or not inq.empty():
                 try:
                     g = inq.get(True, 1)
-                except Queue.Empty:
+                except queue.Empty:
                     continue
 
                 assert len(g.seqlist) == 2
@@ -160,7 +165,7 @@ def test_paired_2thread_more_seq():
             while not self.done or not inq.empty():
                 try:
                     g = inq.get(True, 1)
-                except Queue.Empty:
+                except queue.Empty:
                     continue
 
                 if len(g.seqlist) == 2:

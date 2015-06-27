@@ -1,25 +1,30 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2014. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
 # pylint: disable=invalid-name,missing-docstring
 """
-Find highly-connected k-mers and output them in a .stoptags file, for use
-in partitioning.
+Find highly-connected k-mers.
+
+k-mers are output into a .stoptags file, for later use in partitioning.
 
 % python scripts/find-knots.py <base>
 """
+from __future__ import print_function
 
 import argparse
 import glob
 import os
 import textwrap
 import khmer
-from khmer.file import check_file_status, check_space
-from khmer.khmer_args import info
+import sys
+from khmer.kfile import check_input_files, check_space
+from khmer import khmer_args
+from khmer.khmer_args import (build_counting_args, info, add_loadhash_args,
+                              report_on_config)
 
 # counting hash parameters.
 DEFAULT_COUNTING_HT_SIZE = 3e6                # number of bytes
@@ -59,21 +64,14 @@ def get_parser():
     process, and if you eliminate the already-processed pmap files, you can
     continue where you left off.
     """
-    parser = argparse.ArgumentParser(
-        description="Find all highly connected k-mers.",
-        epilog=textwrap.dedent(epilog),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = build_counting_args(
+        descr="Find all highly connected k-mers.",
+        epilog=textwrap.dedent(epilog))
 
-    parser.add_argument('--n_tables', '-N', type=int,
-                        default=DEFAULT_COUNTING_HT_N,
-                        help='number of k-mer counting tables to use')
-    parser.add_argument('--min-tablesize', '-x', type=float,
-                        default=DEFAULT_COUNTING_HT_SIZE, help='lower bound on'
-                        ' the size of the k-mer counting table(s)')
     parser.add_argument('graphbase', help='Basename for the input and output '
                         'files.')
-    parser.add_argument('--version', action='version', version='%(prog)s '
-                        + khmer.__version__)
+    parser.add_argument('-f', '--force', default=False, action='store_true',
+                        help='Continue past warnings')
     return parser
 
 
@@ -88,64 +86,67 @@ def main():
     if os.path.exists(graphbase + '.stoptags'):
         infiles.append(graphbase + '.stoptags')
     for _ in infiles:
-        check_file_status(_)
+        check_input_files(_, args.force)
 
-    check_space(infiles)
+    check_space(infiles, args.force)
 
-    print 'loading k-mer presence table %s.pt' % graphbase
+    print('loading k-mer presence table %s.pt' % graphbase, file=sys.stderr)
     htable = khmer.load_hashbits(graphbase + '.pt')
 
-    print 'loading tagset %s.tagset...' % graphbase
+    print('loading tagset %s.tagset...' % graphbase, file=sys.stderr)
     htable.load_tagset(graphbase + '.tagset')
 
     initial_stoptags = False    # @CTB regularize with make-initial
     if os.path.exists(graphbase + '.stoptags'):
-        print 'loading stoptags %s.stoptags' % graphbase
+        print('loading stoptags %s.stoptags' % graphbase, file=sys.stderr)
         htable.load_stop_tags(graphbase + '.stoptags')
         initial_stoptags = True
 
     pmap_files = glob.glob(args.graphbase + '.subset.*.pmap')
 
-    print 'loading %d pmap files (first one: %s)' % (len(pmap_files),
-                                                     pmap_files[0])
-    print '---'
-    print 'output stoptags will be in', graphbase + '.stoptags'
+    print('loading %d pmap files (first one: %s)' %
+          (len(pmap_files), pmap_files[0]), file=sys.stderr)
+    print('---', file=sys.stderr)
+    print('output stoptags will be in',
+          graphbase + '.stoptags', file=sys.stderr)
     if initial_stoptags:
-        print '(these output stoptags will include the already-loaded set)'
-    print '---'
+        print(
+            '(these output stoptags will include the already-loaded set)',
+            file=sys.stderr)
+    print('---', file=sys.stderr)
 
     # create counting hash
     ksize = htable.ksize()
-    counting = khmer.new_counting_hash(ksize, args.min_tablesize,
-                                       args.n_tables)
+    counting = khmer_args.create_countgraph(args, ksize=ksize)
 
     # load & merge
     for index, subset_file in enumerate(pmap_files):
-        print '<-', subset_file
+        print('<-', subset_file, file=sys.stderr)
         subset = htable.load_subset_partitionmap(subset_file)
 
-        print '** repartitioning subset... %s' % subset_file
+        print('** repartitioning subset... %s' % subset_file, file=sys.stderr)
         htable.repartition_largest_partition(subset, counting,
                                              EXCURSION_DISTANCE,
                                              EXCURSION_KMER_THRESHOLD,
                                              EXCURSION_KMER_COUNT_THRESHOLD)
 
-        print '** merging subset... %s' % subset_file
+        print('** merging subset... %s' % subset_file, file=sys.stderr)
         htable.merge_subset(subset)
 
-        print '** repartitioning, round 2... %s' % subset_file
+        print('** repartitioning, round 2... %s' %
+              subset_file, file=sys.stderr)
         size = htable.repartition_largest_partition(
             None, counting, EXCURSION_DISTANCE, EXCURSION_KMER_THRESHOLD,
             EXCURSION_KMER_COUNT_THRESHOLD)
 
-        print '** repartitioned size:', size
+        print('** repartitioned size:', size, file=sys.stderr)
 
-        print 'saving stoptags binary'
+        print('saving stoptags binary', file=sys.stderr)
         htable.save_stop_tags(graphbase + '.stoptags')
         os.rename(subset_file, subset_file + '.processed')
-        print '(%d of %d)\n' % (index, len(pmap_files))
+        print('(%d of %d)\n' % (index, len(pmap_files)), file=sys.stderr)
 
-    print 'done!'
+    print('done!', file=sys.stderr)
 
 if __name__ == '__main__':
     main()

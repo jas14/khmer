@@ -1,25 +1,24 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2013. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
 """
 Trim sequences at k-mers of the given abundance, based on the given counting
 hash table.  Output sequences will be placed in 'infile.abundfilt'.
 
-% python scripts/filter-abund.py <counting.kh> <data1> [ <data2> <...> ]
+% python scripts/filter-abund.py <counting.ct> <data1> [ <data2> <...> ]
 
 Use '-h' for parameter help.
 """
+from __future__ import print_function
 import sys
 import screed.fasta
 import os
 import khmer
 from khmer.thread_utils import ThreadedSequenceProcessor, verbose_loader
-
-from khmer.counting_args import build_counting_multifile_args
 
 ###
 
@@ -50,12 +49,12 @@ def main():
 
     n = 0
     for filename in filenames:
-        print 'opening'
+        print('opening')
         for record in screed.open(filename):
             out.save(record.name, record.sequence)
             n += 1
             if n % 10000 == 0:
-                print '...', n
+                print('...', n)
 
 if __name__ == '__main__':
     main()

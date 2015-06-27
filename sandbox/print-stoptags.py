@@ -1,8 +1,8 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2013. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
 import khmer
@@ -11,6 +11,12 @@ import os
 
 K = 32
 
-ht = khmer.new_hashbits(32, 1, 1)
-ht.load_stop_tags(sys.argv[1])
-ht.print_stop_tags(os.path.basename(sys.argv[1]) + '.txt')
+
+def main():
+    ht = khmer.Hashbits(32, 1, 1)
+    ht.load_stop_tags(sys.argv[1])
+    ht.print_stop_tags(os.path.basename(sys.argv[1]) + '.txt')
+
+
+if __name__ == '__main__':
+    main()

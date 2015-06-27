@@ -1,7 +1,7 @@
 //
-// This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-// Copyright (C) Michigan State University, 2009-2013. It is licensed under
-// the three-clause BSD license; see doc/LICENSE.txt.
+// This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+// Copyright (C) Michigan State University, 2009-2015. It is licensed under
+// the three-clause BSD license; see LICENSE.
 // Contact: khmer-project@idyll.org
 //
 
@@ -34,13 +34,18 @@ __attribute__((cpychecker_type_object_for_typedef(typename)))
 #define CPYCHECKER_TYPE_OBJECT_FOR_TYPEDEF(typename)
 #endif
 
-// C++ standard exceptions are subclassed almost ubiquitously.
-#include <exception>
+#define NONCOPYABLE(className)\
+private:\
+    className(const className&);\
+    const className& operator=(const className&)
+
 #include <set>
 #include <map>
 #include <queue>
 
-#   define MAX_COUNT 255
+#include "khmer_exception.hh"
+
+#   define MAX_KCOUNT 255
 #   define MAX_BIGCOUNT 65535
 #   define DEFAULT_TAG_DENSITY 40   // must be even
 
@@ -48,12 +53,14 @@ __attribute__((cpychecker_type_object_for_typedef(typename)))
 #   define CIRCUM_RADIUS 2	// @CTB remove
 #   define CIRCUM_MAX_VOL 200	// @CTB remove
 
+#   define SAVED_SIGNATURE "OXLI"
 #   define SAVED_FORMAT_VERSION 4
 #   define SAVED_COUNTING_HT 1
 #   define SAVED_HASHBITS 2
 #   define SAVED_TAGS 3
 #   define SAVED_STOPTAGS 4
 #   define SAVED_SUBSET 5
+#   define SAVED_LABELSET 6
 
 #   define VERBOSE_REPARTITION 0
 
@@ -67,6 +74,7 @@ typedef unsigned long long int ExactCounterType;
 
 // largest number we're going to hash into. (8 bytes/64 bits/32 nt)
 typedef unsigned long long int HashIntoType;
+const unsigned char KSIZE_MAX = sizeof(HashIntoType)*4;
 
 // largest size 'k' value for k-mer calculations.  (1 byte/255)
 typedef unsigned char WordLength;
@@ -80,10 +88,6 @@ typedef void (*CallbackFn)(const char * info, void * callback_data,
                            unsigned long long n_reads,
                            unsigned long long other);
 
-struct InvalidStreamBuffer : public std:: exception {
-};
-
-
 typedef unsigned int PartitionID;
 typedef std::set<HashIntoType> SeenSet;
 typedef std::set<PartitionID> PartitionSet;
@@ -96,16 +100,17 @@ typedef std::queue<HashIntoType> NodeQueue;
 typedef std::map<PartitionID, PartitionID*> PartitionToPartitionPMap;
 typedef std::map<HashIntoType, unsigned int> TagCountMap;
 typedef std::map<PartitionID, unsigned int> PartitionCountMap;
-typedef std::map<unsigned long long, unsigned long long> PartitionCountDistribution;
+typedef std::map<unsigned long long, unsigned long long>
+PartitionCountDistribution;
 
 // types used in @camillescott's sparse labeling extension
 typedef unsigned long long int Label;
 typedef std::multimap<HashIntoType, Label*> TagLabelPtrMap;
-typedef std::multimap<Label, HashIntoType*> LabelTagPtrMap;
+typedef std::multimap<Label, HashIntoType> LabelTagMap;
 typedef std::pair<HashIntoType, Label*> TagLabelPtrPair;
-typedef std::pair<Label, HashIntoType*> LabelTagPtrPair;
+typedef std::pair<Label, HashIntoType> LabelTagPair;
 typedef std::set<Label*> LabelPtrSet;
-typedef std::set<HashIntoType*> TagPtrSet;
+typedef std::set<HashIntoType> TagSet;
 typedef std::map<Label, Label*> LabelPtrMap;
 
 template <typename T>
@@ -115,34 +120,6 @@ void deallocate_ptr_set(T& s)
         delete *i;
     }
 }
-
-class khmer_file_exception : public std::exception
-{
-public:
-    khmer_file_exception(const char * msg) : _msg(msg) { };
-
-    virtual const char* what() const throw() {
-        return _msg;
-    }
-protected:
-    const char * _msg;
-};
-
-class InvalidStreamHandle : public khmer_file_exception
-{
-public:
-    InvalidStreamHandle()
-        : khmer_file_exception("Generic InvalidStreamHandle error") {}
-    InvalidStreamHandle(const char * msg) : khmer_file_exception(msg) {}
-};
-
-class StreamReadError : public khmer_file_exception
-{
-public:
-    StreamReadError()
-        : khmer_file_exception("Generic StreamReadError error") {}
-    StreamReadError(const char * msg) : khmer_file_exception(msg) {}
-};
 
 }
 

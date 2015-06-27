@@ -1,7 +1,7 @@
 //
-// This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-// Copyright (C) Michigan State University, 2009-2013. It is licensed under
-// the three-clause BSD license; see doc/LICENSE.txt.
+// This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+// Copyright (C) Michigan State University, 2009-2015. It is licensed under
+// the three-clause BSD license; see LICENSE.
 // Contact: khmer-project@idyll.org
 //
 
@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <errno.h>
 
 using namespace std;
 using namespace khmer;
@@ -66,31 +67,6 @@ accumulate_timer_deltas( uint32_t metrics_key )
 }
 #endif
 
-Hashtable:: Hasher::
-Hasher(
-    uint32_t const  pool_id,
-    uint32_t const  thread_id,
-    uint8_t const	  trace_level
-)
-    : pool_id( pool_id ),
-      thread_id( thread_id ),
-#ifdef WITH_INTERNAL_METRICS
-      pmetrics( HashTablePerformanceMetrics( ) ),
-#endif
-      trace_logger(
-          TraceLogger(
-              trace_level, "hashtable-%lu-%lu.log",
-              (unsigned long int)pool_id, (unsigned long int)thread_id
-          )
-      )
-{ }
-
-
-Hashtable:: Hasher::
-~Hasher( )
-{ }
-
-
 //
 // check_and_process_read: checks for non-ACGT characters before consuming
 //
@@ -120,17 +96,11 @@ unsigned int Hashtable::check_and_process_read(std::string &read,
 bool Hashtable::check_and_normalize_read(std::string &read) const
 {
     bool rc = true;
-#if (0)  // TODO: WITH_INTERNAL_TRACING < some_threshold
-    Hasher		  &hasher		= _get_hasher( );
-#endif
 
     if (read.length() < _ksize) {
         return false;
     }
 
-#if (0)   // TODO: WITH_INTERNAL_TRACING < some_threshold
-    hasher.pmetrics.start_timers( );
-#endif
     for (unsigned int i = 0; i < read.length(); i++)  {
         read[ i ] &= 0xdf; // toupper - knock out the "lowercase bit"
         if (!is_valid_dna( read[ i ] )) {
@@ -138,12 +108,6 @@ bool Hashtable::check_and_normalize_read(std::string &read) const
             break;
         }
     }
-#if (0)  // TODO: WITH_INTERNAL_TRACING < some_threshold
-    hasher.pmetrics.stop_timers( );
-    hasher.pmetrics.accumulate_timer_deltas(
-        (uint32_t)HashTablePerformanceMetrics:: MKEY_TIME_NORM_READ
-    );
-#endif
 
     return rc;
 }
@@ -157,23 +121,15 @@ void
 Hashtable::
 consume_fasta(
     std:: string const  &filename,
-    unsigned int	      &total_reads, unsigned long long	&n_consumed,
-    CallbackFn	      callback,	    void *		callback_data
+    unsigned int	      &total_reads, unsigned long long	&n_consumed
 )
 {
-    khmer:: Config    &the_config	  = khmer:: get_active_config( );
-
-    // Note: Always assume only 1 thread if invoked this way.
     IParser *	  parser =
-        IParser::get_parser(
-            filename, 1, the_config.get_reads_input_buffer_size( ),
-            the_config.get_reads_parser_trace_level( )
-        );
+        IParser::get_parser( filename );
 
     consume_fasta(
         parser,
-        total_reads, n_consumed,
-        callback, callback_data
+        total_reads, n_consumed
     );
 
     delete parser;
@@ -183,69 +139,25 @@ void
 Hashtable::
 consume_fasta(
     read_parsers:: IParser *  parser,
-    unsigned int		    &total_reads, unsigned long long  &n_consumed,
-    CallbackFn		    callback,	  void *	      callback_data
+    unsigned int		    &total_reads, unsigned long long  &n_consumed
 )
 {
-    Hasher		  &hasher		=
-        _get_hasher( parser->uuid( ) );
-#if (0) // Note: Used with callback - currently disabled.
-    unsigned long long int  n_consumed_LOCAL	= 0;
-#endif
     Read			  read;
-
-    hasher.trace_logger(
-        TraceLogger:: TLVL_DEBUG2, "Starting trace of 'consume_fasta'....\n"
-    );
 
     // Iterate through the reads and consume their k-mers.
     while (!parser->is_complete( )) {
-        unsigned int  this_n_consumed;
-        bool	  is_valid;
 
-        read = parser->get_next_read( );
+        try {
+            bool is_valid;
+            read = parser->get_next_read( );
 
-        this_n_consumed =
-            check_and_process_read(read.sequence, is_valid);
+            unsigned int this_n_consumed =
+                check_and_process_read(read.sequence, is_valid);
 
-#ifdef WITH_INTERNAL_METRICS
-        hasher.pmetrics.start_timers( );
-#endif
-#if (0) // Note: Used with callback - currently disabled.
-        n_consumed_LOCAL  = __sync_add_and_fetch( &n_consumed, this_n_consumed );
-#else
-        __sync_add_and_fetch( &n_consumed, this_n_consumed );
-#endif
-        unsigned int total_reads_LOCAL = __sync_add_and_fetch( &total_reads, 1 );
-#ifdef WITH_INTERNAL_METRICS
-        hasher.pmetrics.stop_timers( );
-        hasher.pmetrics.accumulate_timer_deltas(
-            (uint32_t)HashTablePerformanceMetrics:: MKEY_TIME_UPDATE_TALLIES
-        );
-#endif
-
-        if (0 == (total_reads_LOCAL % 10000))
-            hasher.trace_logger(
-                TraceLogger:: TLVL_DEBUG3,
-                "Total number of reads processed: %llu\n",
-                (unsigned long long int)total_reads_LOCAL
-            );
-
-        // TODO: Figure out alternative to callback into Python VM
-        //       Cannot use in multi-threaded operation.
-#if (0)
-        // run callback, if specified
-        if (callback && (0 == (total_reads_LOCAL % CALLBACK_PERIOD))) {
-            try {
-                callback(
-                    "consume_fasta", callback_data,
-                    total_reads_LOCAL, n_consumed_LOCAL
-                );
-            } catch (...) {
-                throw;
-            }
+            __sync_add_and_fetch( &n_consumed, this_n_consumed );
+            __sync_add_and_fetch( &total_reads, 1 );
+        } catch (read_parsers::NoMoreReadsAvailable) {
         }
-#endif // 0
 
     } // while reads left for parser
 
@@ -272,32 +184,6 @@ unsigned int Hashtable::consume_string(const std::string &s)
     return n_consumed;
 }
 
-//
-// consume_high_abund_kmers: run through every k-mer in the given string,
-//     and if the k-mer is high enough abundance, add it. Return number
-//     of consumed k-mers.
-//
-
-unsigned int Hashtable::consume_high_abund_kmers(const std::string &s,
-        BoundedCounterType min_count)
-{
-    const char * sp = s.c_str();
-    unsigned int n_consumed = 0;
-
-    KMerIterator kmers(sp, _ksize);
-
-    while(!kmers.done()) {
-        HashIntoType kmer = kmers.next();
-
-        if (get_count(kmer) >= min_count) {
-            count(kmer);
-            n_consumed++;
-        }
-    }
-
-    return n_consumed;
-}
-
 // technically, get medioid count... our "median" is always a member of the
 // population.
 
@@ -307,24 +193,10 @@ void Hashtable::get_median_count(const std::string &s,
                                  float &stddev)
 {
     std::vector<BoundedCounterType> counts;
-    KMerIterator kmers(s.c_str(), _ksize);
-
-    while(!kmers.done()) {
-        HashIntoType kmer = kmers.next();
-        BoundedCounterType count = this->get_count(kmer);
-        counts.push_back(count);
-    }
+    this->get_kmer_counts(s, counts);
 
     if (!counts.size()) {
-        throw std::exception();
-    }
-
-    if (!counts.size()) {
-        median = 0;
-        average = 0;
-        stddev = 0;
-
-        return;
+        throw khmer_exception("no k-mer counts for this string; too short?");
     }
 
     average = 0;
@@ -346,6 +218,42 @@ void Hashtable::get_median_count(const std::string &s,
     median = counts[counts.size() / 2]; // rounds down
 }
 
+//
+// Optimized filter function for normalize-by-median
+//
+bool Hashtable::median_at_least(const std::string &s,
+                                unsigned int cutoff)
+{
+    KMerIterator kmers(s.c_str(), _ksize);
+    unsigned int min_req = 0.5 + float(s.size() - _ksize + 1) / 2;
+    unsigned int num_cutoff_kmers = 0;
+
+    // first loop:
+    // accumulate at least min_req worth of counts before checking to see
+    // if we have enough high-abundance k-mers to indicate success.
+    for (unsigned int i = 0; i < min_req; ++i) {
+        HashIntoType kmer = kmers.next();
+        if (this->get_count(kmer) >= cutoff) {
+            ++num_cutoff_kmers;
+        }
+    }
+
+    // second loop: now check to see if we pass the threshold for each k-mer.
+    if (num_cutoff_kmers >= min_req) {
+        return true;
+    }
+    while(!kmers.done()) {
+        HashIntoType kmer = kmers.next();
+        if (this->get_count(kmer) >= cutoff) {
+            ++num_cutoff_kmers;
+            if (num_cutoff_kmers >= min_req) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void Hashtable::save_tagset(std::string outfilename)
 {
     ofstream outfile(outfilename.c_str(), ios::binary);
@@ -354,6 +262,7 @@ void Hashtable::save_tagset(std::string outfilename)
 
     HashIntoType * buf = new HashIntoType[tagset_size];
 
+    outfile.write(SAVED_SIGNATURE, 4);
     unsigned char version = SAVED_FORMAT_VERSION;
     outfile.write((const char *) &version, 1);
 
@@ -371,6 +280,10 @@ void Hashtable::save_tagset(std::string outfilename)
     }
 
     outfile.write((const char *) buf, sizeof(HashIntoType) * tagset_size);
+    if (outfile.fail()) {
+        delete[] buf;
+        throw khmer_file_exception(strerror(errno));
+    }
     outfile.close();
 
     delete[] buf;
@@ -393,7 +306,7 @@ void Hashtable::load_tagset(std::string infilename, bool clear_tags)
         } else {
             err = "Unknown error in opening file: " + infilename;
         }
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 
     if (clear_tags) {
@@ -401,26 +314,33 @@ void Hashtable::load_tagset(std::string infilename, bool clear_tags)
     }
 
     unsigned char version, ht_type;
+    char signature[4];
     unsigned int save_ksize = 0;
 
     size_t tagset_size = 0;
     HashIntoType * buf = NULL;
 
     try {
+        infile.read(signature, 4);
         infile.read((char *) &version, 1);
         infile.read((char *) &ht_type, 1);
-        if (!(version == SAVED_FORMAT_VERSION)) {
+        if (!(std::string(signature, 4) == SAVED_SIGNATURE)) {
+            std::ostringstream err;
+            err << "Incorrect file signature " << signature
+                << " while reading tagset from " << infilename
+                << "; should be " << SAVED_SIGNATURE;
+            throw khmer_file_exception(err.str());
+        } else if (!(version == SAVED_FORMAT_VERSION)) {
             std::ostringstream err;
             err << "Incorrect file format version " << (int) version
                 << " while reading tagset from " << infilename
                 << "; should be " << (int) SAVED_FORMAT_VERSION;
-            throw khmer_file_exception(err.str().c_str());
-        }
-        else if (!(ht_type == SAVED_TAGS)) {
+            throw khmer_file_exception(err.str());
+        } else if (!(ht_type == SAVED_TAGS)) {
             std::ostringstream err;
             err << "Incorrect file format type " << (int) ht_type
                 << " while reading tagset from " << infilename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
 
         infile.read((char *) &save_ksize, sizeof(save_ksize));
@@ -428,7 +348,7 @@ void Hashtable::load_tagset(std::string infilename, bool clear_tags)
             std::ostringstream err;
             err << "Incorrect k-mer size " << save_ksize
                 << " while reading tagset from " << infilename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
 
         infile.read((char *) &tagset_size, sizeof(tagset_size));
@@ -445,10 +365,10 @@ void Hashtable::load_tagset(std::string infilename, bool clear_tags)
         delete[] buf;
     } catch (std::ifstream::failure &e) {
         std::string err = "Error reading data from: " + infilename;
-	if (buf != NULL) {
-	  delete[] buf;
-	}
-        throw khmer_file_exception(err.c_str());
+        if (buf != NULL) {
+            delete[] buf;
+        }
+        throw khmer_file_exception(err);
     }
 }
 
@@ -535,24 +455,15 @@ void
 Hashtable::
 consume_fasta_and_tag(
     std:: string const  &filename,
-    unsigned int	      &total_reads, unsigned long long	&n_consumed,
-    CallbackFn	      callback,	    void *		callback_data
+    unsigned int	      &total_reads, unsigned long long	&n_consumed
 )
 {
-    khmer:: Config    &the_config	  = khmer:: get_active_config( );
-
-    // Note: Always assume only 1 thread if invoked this way.
     IParser *	  parser =
-        IParser::get_parser(
-            filename, 1, the_config.get_reads_input_buffer_size( ),
-            the_config.get_reads_parser_trace_level( )
-        );
-
+        IParser::get_parser( filename );
 
     consume_fasta_and_tag(
         parser,
-        total_reads, n_consumed,
-        callback, callback_data
+        total_reads, n_consumed
     );
 
     delete parser;
@@ -562,26 +473,14 @@ void
 Hashtable::
 consume_fasta_and_tag(
     read_parsers:: IParser *  parser,
-    unsigned int		    &total_reads,   unsigned long long	&n_consumed,
-    CallbackFn		    callback,	    void *		callback_data
+    unsigned int		    &total_reads,   unsigned long long	&n_consumed
 )
 {
-    Hasher		  &hasher		=
-        _get_hasher( parser->uuid( ) );
-    unsigned int		  total_reads_LOCAL	= 0;
-#if (0) // Note: Used with callback - currently disabled.
-    unsigned long long int  n_consumed_LOCAL	= 0;
-#endif
     Read			  read;
 
     // TODO? Delete the following assignments.
     total_reads = 0;
     n_consumed = 0;
-
-    hasher.trace_logger(
-        TraceLogger:: TLVL_DEBUG2,
-        "Starting trace of 'consume_fasta_and_tag'....\n"
-    );
 
     // Iterate through the reads and consume their k-mers.
     while (!parser->is_complete( )) {
@@ -592,46 +491,9 @@ consume_fasta_and_tag(
             unsigned long long this_n_consumed = 0;
             consume_sequence_and_tag( read.sequence, this_n_consumed );
 
-#ifdef WITH_INTERNAL_METRICS
-            hasher.pmetrics.start_timers( );
-#endif
-#if (0) // Note: Used with callback - currently disabled.
-            n_consumed_LOCAL  = __sync_add_and_fetch( &n_consumed, this_n_consumed );
-#else
             __sync_add_and_fetch( &n_consumed, this_n_consumed );
-#endif
-            total_reads_LOCAL = __sync_add_and_fetch( &total_reads, 1 );
-#ifdef WITH_INTERNAL_METRICS
-            hasher.pmetrics.stop_timers( );
-            hasher.pmetrics.accumulate_timer_deltas(
-                (uint32_t)HashTablePerformanceMetrics:: MKEY_TIME_UPDATE_TALLIES
-            );
-#endif
+            __sync_add_and_fetch( &total_reads, 1 );
         }
-
-        if (0 == (total_reads_LOCAL % 10000))
-            hasher.trace_logger(
-                TraceLogger:: TLVL_DEBUG3,
-                "Total number of reads processed: %llu\n",
-                (unsigned long long int)total_reads_LOCAL
-            );
-
-        // TODO: Figure out alternative to callback into Python VM
-        //       Cannot use in multi-threaded operation.
-#if (0)
-        // run callback, if specified
-        if (total_reads_TL % CALLBACK_PERIOD == 0 && callback) {
-            std::cout << "n tags: " << all_tags.size() << "\n";
-            try {
-                callback("consume_fasta_and_tag", callback_data, total_reads_TL,
-                         n_consumed);
-            } catch (...) {
-                delete parser;
-                throw;
-            }
-        }
-#endif // 0
-
     } // while reads left for parser
 
 }
@@ -644,9 +506,7 @@ consume_fasta_and_tag(
 
 void Hashtable::consume_fasta_and_tag_with_stoptags(const std::string &filename,
         unsigned int &total_reads,
-        unsigned long long &n_consumed,
-        CallbackFn callback,
-        void * callback_data)
+        unsigned long long &n_consumed)
 {
     total_reads = 0;
     n_consumed = 0;
@@ -735,17 +595,6 @@ void Hashtable::consume_fasta_and_tag_with_stoptags(const std::string &filename,
         // reset the sequence info, increment read number
         total_reads++;
 
-        // run callback, if specified
-        if (total_reads % CALLBACK_PERIOD == 0 && callback) {
-            std::cout << "n tags: " << all_tags.size() << "\n";
-            try {
-                callback("consume_fasta_and_tag", callback_data, total_reads,
-                         n_consumed);
-            } catch (...) {
-                delete parser;
-                throw;
-            }
-        }
     }
     delete parser;
 }
@@ -776,9 +625,7 @@ void Hashtable::divide_tags_into_subsets(unsigned int subset_size,
 
 void Hashtable::consume_partitioned_fasta(const std::string &filename,
         unsigned int &total_reads,
-        unsigned long long &n_consumed,
-        CallbackFn callback,
-        void * callback_data)
+        unsigned long long &n_consumed)
 {
     total_reads = 0;
     n_consumed = 0;
@@ -817,17 +664,6 @@ void Hashtable::consume_partitioned_fasta(const std::string &filename,
 
         // reset the sequence info, increment read number
         total_reads++;
-
-        // run callback, if specified
-        if (total_reads % CALLBACK_PERIOD == 0 && callback) {
-            try {
-                callback("consume_partitioned_fasta", callback_data, total_reads,
-                         n_consumed);
-            } catch (...) {
-                delete parser;
-                throw;
-            }
-        }
     }
 
     delete parser;
@@ -1046,10 +882,8 @@ const
     return neighbors;
 }
 
-void Hashtable::filter_if_present(const std::string infilename,
-                                  const std::string outputfile,
-                                  CallbackFn callback,
-                                  void * callback_data)
+void Hashtable::filter_if_present(const std::string &infilename,
+                                  const std::string &outputfile)
 {
     IParser* parser = IParser::get_parser(infilename);
     ofstream outfile(outputfile.c_str());
@@ -1085,18 +919,6 @@ void Hashtable::filter_if_present(const std::string infilename,
             }
 
             total_reads++;
-
-            // run callback, if specified
-            if (total_reads % CALLBACK_PERIOD == 0 && callback) {
-                try {
-                    callback("filter_if_present", callback_data,total_reads, reads_kept);
-                } catch (...) {
-                    delete parser;
-                    parser = NULL;
-                    outfile.close();
-                    throw;
-                }
-            }
         }
     }
 
@@ -1159,7 +981,7 @@ const
         }
 
         if (!(breadth >= cur_breadth)) { // keep track of watermark, for debugging.
-            throw std::exception();
+            throw khmer_exception();
         }
         if (breadth > cur_breadth) {
             cur_breadth = breadth;
@@ -1237,371 +1059,6 @@ const
     }
 
     return total;
-}
-
-unsigned int Hashtable::count_kmers_within_depth(HashIntoType kmer_f,
-        HashIntoType kmer_r,
-        unsigned int depth,
-        unsigned int max_count,
-        SeenSet * seen)
-const
-{
-    HashIntoType f, r;
-    unsigned int count = 1;
-
-    if (depth == 0) {
-        return 0;
-    }
-
-    const unsigned int rc_left_shift = _ksize*2 - 2;
-
-    seen->insert(uniqify_rc(kmer_f, kmer_r));
-
-    // NEXT.
-    f = next_f(kmer_f, 'A');
-    r = next_r(kmer_r, 'A');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth - 1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-    }
-
-    f = next_f(kmer_f, 'C');
-    r = next_r(kmer_r, 'C');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    f = next_f(kmer_f, 'G');
-    r = next_r(kmer_r, 'G');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    f = next_f(kmer_f, 'T');
-    r = next_r(kmer_r, 'T');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    // PREVIOUS.
-    r = prev_r(kmer_r, 'A');
-    f = prev_f(kmer_f, 'A');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    r = prev_r(kmer_r, 'C');
-    f = prev_f(kmer_f, 'C');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    r = prev_r(kmer_r, 'G');
-    f = prev_f(kmer_f, 'G');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    r = prev_r(kmer_r, 'T');
-    f = prev_f(kmer_f, 'T');
-    if (get_count(uniqify_rc(f,r)) && !set_contains(*seen, uniqify_rc(f, r))) {
-        count += count_kmers_within_depth(f, r, depth -1, max_count - count,
-                                          seen);
-        if (count >= max_count) {
-            return count;
-        }
-        ;
-    }
-
-    return count;
-}
-
-unsigned int Hashtable::find_radius_for_volume(HashIntoType kmer_f,
-        HashIntoType kmer_r,
-        unsigned int max_count,
-        unsigned int max_radius)
-const
-{
-    HashIntoType f, r;
-    NodeQueue node_q;
-    std::queue<unsigned int> breadth_q;
-    unsigned int breadth = 0;
-
-    const unsigned int rc_left_shift = _ksize*2 - 2;
-    unsigned int total = 0;
-
-    SeenSet keeper;		// keep track of traversed kmers
-
-    // start breadth-first search.
-
-    node_q.push(kmer_f);
-    node_q.push(kmer_r);
-    breadth_q.push(0);
-
-    while(!node_q.empty()) {
-        kmer_f = node_q.front();
-        node_q.pop();
-        kmer_r = node_q.front();
-        node_q.pop();
-        breadth = breadth_q.front();
-        breadth_q.pop();
-
-        HashIntoType kmer = uniqify_rc(kmer_f, kmer_r);
-        if (set_contains(keeper, kmer)) {
-            continue;
-        }
-
-        // keep track of seen kmers
-        keeper.insert(kmer);
-        total++;
-
-        if (total >= max_count || breadth >= max_radius) {
-            break;
-        }
-
-        //
-        // Enqueue next set of nodes.
-        //
-
-        // NEXT.
-        f = next_f(kmer_f, 'A');
-        r = next_r(kmer_r, 'A');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        f = next_f(kmer_f, 'C');
-        r = next_r(kmer_r, 'C');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        f = next_f(kmer_f, 'G');
-        r = next_r(kmer_r, 'G');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        f = next_f(kmer_f, 'T');
-        r = next_r(kmer_r, 'T');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        // PREVIOUS.
-        r = prev_r(kmer_r, 'A');
-        f = prev_f(kmer_f, 'A');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        r = prev_r(kmer_r, 'C');
-        f = prev_f(kmer_f, 'C');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        r = prev_r(kmer_r, 'G');
-        f = prev_f(kmer_f, 'G');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        r = prev_r(kmer_r, 'T');
-        f = prev_f(kmer_f, 'T');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        if (node_q.empty()) {
-            breadth = max_radius;
-            break;
-        }
-    }
-
-    return breadth;
-}
-
-unsigned int Hashtable::count_kmers_on_radius(HashIntoType kmer_f,
-        HashIntoType kmer_r,
-        unsigned int radius,
-        unsigned int max_volume)
-const
-{
-    HashIntoType f, r;
-    NodeQueue node_q;
-    std::queue<unsigned int> breadth_q;
-    unsigned int cur_breadth = 0;
-    unsigned int count = 0;
-
-    const unsigned int rc_left_shift = _ksize*2 - 2;
-    unsigned int total = 0;
-
-    SeenSet keeper;		// keep track of traversed kmers
-
-    // start breadth-first search.
-
-    node_q.push(kmer_f);
-    node_q.push(kmer_r);
-    breadth_q.push(0);
-
-    while(!node_q.empty()) {
-        kmer_f = node_q.front();
-        node_q.pop();
-        kmer_r = node_q.front();
-        node_q.pop();
-        unsigned int breadth = breadth_q.front();
-        breadth_q.pop();
-
-        if (breadth > radius) {
-            break;
-        }
-
-        HashIntoType kmer = uniqify_rc(kmer_f, kmer_r);
-        if (set_contains(keeper, kmer)) {
-            continue;
-        }
-
-        if (breadth == radius) {
-            count++;
-        }
-
-        // keep track of seen kmers
-        keeper.insert(kmer);
-        total++;
-
-        if (max_volume && total > max_volume) {
-            break;
-        }
-
-        if (!(breadth >= cur_breadth)) { // keep track of watermark, for debugging.
-            throw std::exception();
-        }
-        if (breadth > cur_breadth) {
-            cur_breadth = breadth;
-        }
-
-        //
-        // Enqueue next set of nodes.
-        //
-
-        // NEXT.
-        f = next_f(kmer_f, 'A');
-        r = next_r(kmer_r, 'A');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        f = next_f(kmer_f, 'C');
-        r = next_r(kmer_r, 'C');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        f = next_f(kmer_f, 'G');
-        r = next_r(kmer_r, 'G');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        f = next_f(kmer_f, 'T');
-        r = next_r(kmer_r, 'T');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        // PREVIOUS.
-        r = prev_r(kmer_r, 'A');
-        f = prev_f(kmer_f, 'A');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        r = prev_r(kmer_r, 'C');
-        f = prev_f(kmer_f, 'C');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        r = prev_r(kmer_r, 'G');
-        f = prev_f(kmer_f, 'G');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-
-        r = prev_r(kmer_r, 'T');
-        f = prev_f(kmer_f, 'T');
-        if (get_count(uniqify_rc(f,r)) && !set_contains(keeper, uniqify_rc(f,r))) {
-            node_q.push(f);
-            node_q.push(r);
-            breadth_q.push(breadth + 1);
-        }
-    }
-
-    return count;
 }
 
 size_t Hashtable::trim_on_stoptags(std::string seq) const
@@ -1729,7 +1186,7 @@ const
         }
 
         if (!(breadth >= cur_breadth)) { // keep track of watermark, for debugging.
-            throw std::exception();
+            throw khmer_exception();
         }
         if (breadth > cur_breadth) {
             cur_breadth = breadth;
@@ -1831,7 +1288,7 @@ void Hashtable::load_stop_tags(std::string infilename, bool clear_tags)
         } else {
             err = "Unknown error in opening file: " + infilename;
         }
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 
     if (clear_tags) {
@@ -1839,25 +1296,32 @@ void Hashtable::load_stop_tags(std::string infilename, bool clear_tags)
     }
 
     unsigned char version, ht_type;
+    char signature[4];
     unsigned int save_ksize = 0;
 
     size_t tagset_size = 0;
 
     try {
+        infile.read(signature, 4);
         infile.read((char *) &version, 1);
         infile.read((char *) &ht_type, 1);
-        if (!(version == SAVED_FORMAT_VERSION)) {
+        if (!(std::string(signature, 4) == SAVED_SIGNATURE)) {
+            std::ostringstream err;
+            err << "Incorrect file signature " << signature
+                << " while reading stoptags from " << infilename
+                << "; should be " << SAVED_SIGNATURE;
+            throw khmer_file_exception(err.str());
+        } else if (!(version == SAVED_FORMAT_VERSION)) {
             std::ostringstream err;
             err << "Incorrect file format version " << (int) version
                 << " while reading stoptags from " << infilename
                 << "; should be " << (int) SAVED_FORMAT_VERSION;
-            throw khmer_file_exception(err.str().c_str());
-        }
-        else if (!(ht_type == SAVED_STOPTAGS)) {
+            throw khmer_file_exception(err.str());
+        } else if (!(ht_type == SAVED_STOPTAGS)) {
             std::ostringstream err;
             err << "Incorrect file format type " << (int) ht_type
                 << " while reading stoptags from " << infilename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
 
         infile.read((char *) &save_ksize, sizeof(save_ksize));
@@ -1865,7 +1329,7 @@ void Hashtable::load_stop_tags(std::string infilename, bool clear_tags)
             std::ostringstream err;
             err << "Incorrect k-mer size " << save_ksize
                 << " while reading stoptags from " << infilename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
         infile.read((char *) &tagset_size, sizeof(tagset_size));
 
@@ -1879,7 +1343,7 @@ void Hashtable::load_stop_tags(std::string infilename, bool clear_tags)
         delete[] buf;
     } catch (std::ifstream::failure &e) {
         std::string err = "Error reading stoptags from: " + infilename;
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 }
 
@@ -1890,6 +1354,7 @@ void Hashtable::save_stop_tags(std::string outfilename)
 
     HashIntoType * buf = new HashIntoType[tagset_size];
 
+    outfile.write(SAVED_SIGNATURE, 4);
     unsigned char version = SAVED_FORMAT_VERSION;
     outfile.write((const char *) &version, 1);
 
@@ -2036,7 +1501,7 @@ void Hashtable::extract_unique_paths(std::string seq,
         // then extract.
 
         if (!(j == min_length)) {
-            throw std::exception();
+            throw khmer_exception();
         }
         if ( ((float)seen_counter / (float) j) <= max_seen) {
             unsigned int start = i;
@@ -2077,4 +1542,43 @@ void Hashtable::extract_unique_paths(std::string seq,
         }
     }
 }
+
+
+void Hashtable::get_kmers(const std::string &s,
+                          std::vector<std::string> &kmers_vec) const
+{
+    if (s.length() < _ksize) {
+        return;
+    }
+    for (unsigned int i = 0; i < s.length() - _ksize + 1; i++) {
+        std::string sub = s.substr(i, i + _ksize);
+        kmers_vec.push_back(sub);
+    }
+}
+
+
+void Hashtable::get_kmer_hashes(const std::string &s,
+                                std::vector<HashIntoType> &kmers_vec) const
+{
+    KMerIterator kmers(s.c_str(), _ksize);
+
+    while(!kmers.done()) {
+        HashIntoType kmer = kmers.next();
+        kmers_vec.push_back(kmer);
+    }
+}
+
+
+void Hashtable::get_kmer_counts(const std::string &s,
+                                std::vector<BoundedCounterType> &counts) const
+{
+    KMerIterator kmers(s.c_str(), _ksize);
+
+    while(!kmers.done()) {
+        HashIntoType kmer = kmers.next();
+        BoundedCounterType c = this->get_count(kmer);
+        counts.push_back(c);
+    }
+}
+
 // vim: set sts=2 sw=2:

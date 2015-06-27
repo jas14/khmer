@@ -1,7 +1,7 @@
 //
-// This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-// Copyright (C) Michigan State University, 2009-2013. It is licensed under
-// the three-clause BSD license; see doc/LICENSE.txt.
+// This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+// Copyright (C) Michigan State University, 2009-2015. It is licensed under
+// the three-clause BSD license; see LICENSE.
 // Contact: khmer-project@idyll.org
 //
 
@@ -11,6 +11,7 @@
 #include "read_parsers.hh"
 
 #include <sstream>
+#include <errno.h>
 
 using namespace std;
 using namespace khmer;
@@ -19,7 +20,7 @@ using namespace khmer:: read_parsers;
 void Hashbits::save(std::string outfilename)
 {
     if (!_counts[0]) {
-        throw std::exception();
+        throw khmer_exception();
     }
 
     unsigned int save_ksize = _ksize;
@@ -28,6 +29,7 @@ void Hashbits::save(std::string outfilename)
 
     ofstream outfile(outfilename.c_str(), ios::binary);
 
+    outfile.write(SAVED_SIGNATURE, 4);
     unsigned char version = SAVED_FORMAT_VERSION;
     outfile.write((const char *) &version, 1);
 
@@ -45,9 +47,16 @@ void Hashbits::save(std::string outfilename)
 
         outfile.write((const char *) _counts[i], tablebytes);
     }
+    if (outfile.fail()) {
+        throw khmer_file_exception(strerror(errno));
+    }
     outfile.close();
 }
 
+/**
+ * Loads @param infilename into Hashbits, with error checking on
+ * file type and file version.  Populates _counts internally.
+ */
 void Hashbits::load(std::string infilename)
 {
     ifstream infile;
@@ -65,7 +74,7 @@ void Hashbits::load(std::string infilename)
         } else {
             err = "Unknown error in opening file: " + infilename;
         }
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 
     if (_counts) {
@@ -82,21 +91,29 @@ void Hashbits::load(std::string infilename)
         unsigned int save_ksize = 0;
         unsigned char save_n_tables = 0;
         unsigned long long save_tablesize = 0;
+        char signature[4];
         unsigned char version, ht_type;
 
+        infile.read(signature, 4);
         infile.read((char *) &version, 1);
         infile.read((char *) &ht_type, 1);
-        if (!(version == SAVED_FORMAT_VERSION)) {
+        if (!(std::string(signature, 4) == SAVED_SIGNATURE)) {
+            std::ostringstream err;
+            err << "Does not start with signature for a khmer " <<
+                "file: " << signature << " Should be: " <<
+                SAVED_SIGNATURE;
+            throw khmer_file_exception(err.str());
+        } else if (!(version == SAVED_FORMAT_VERSION)) {
             std::ostringstream err;
             err << "Incorrect file format version " << (int) version
                 << " while reading k-mer graph from " << infilename
                 << "; should be " << (int) SAVED_FORMAT_VERSION;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         } else if (!(ht_type == SAVED_HASHBITS)) {
             std::ostringstream err;
             err << "Incorrect file format type " << (int) ht_type
                 << " while reading k-mer graph from " << infilename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
 
         infile.read((char *) &save_ksize, sizeof(save_ksize));
@@ -133,16 +150,14 @@ void Hashbits::load(std::string infilename)
         } else {
             err = "Error reading from k-mer graph file: " + infilename;
         }
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 }
 
-// for counting overlap k-mers specifically!!
-
-//
-// check_and_process_read: checks for non-ACGT characters before consuming
-//
-
+/**
+ * Checks for non-ACGT characters before consuming read.
+ * This is specifically for counting overlap k-mers.
+ */
 unsigned int Hashbits::check_and_process_read_overlap(std::string &read,
         bool &is_valid,
         Hashbits &ht2)
@@ -156,16 +171,13 @@ unsigned int Hashbits::check_and_process_read_overlap(std::string &read,
     return consume_string_overlap(read, ht2);
 }
 
-//
-// consume_fasta: consume a FASTA file of reads
-//
-
+/**
+ * Consume a FASTA file of reads.
+ */
 void Hashbits::consume_fasta_overlap(const std::string &filename,
                                      HashIntoType curve[2][100],Hashbits &ht2,
                                      unsigned int &total_reads,
-                                     unsigned long long &n_consumed,
-                                     CallbackFn callback,
-                                     void * callback_data)
+                                     unsigned long long &n_consumed)
 {
     total_reads = 0;
     n_consumed = 0;
@@ -192,7 +204,6 @@ void Hashbits::consume_fasta_overlap(const std::string &filename,
     }
 
     total_reads = 0;
-    HashIntoType start = 0, stop = 0;
 
     delete parser;
     parser = IParser::get_parser(filename.c_str());
@@ -222,27 +233,17 @@ void Hashbits::consume_fasta_overlap(const std::string &filename,
         total_reads++;
 
         if (total_reads%block_size == 0) {
-            curve[0][total_reads/block_size-1] = n_overlap_kmers(start,stop);
-            curve[1][total_reads/block_size-1] = n_kmers(start,stop);
+            curve[0][total_reads/block_size-1] = n_overlap_kmers();
+            curve[1][total_reads/block_size-1] = n_unique_kmers();
         }
-        // run callback, if specified
-        if (total_reads % CALLBACK_PERIOD == 0 && callback) {
-            try {
-                callback("consume_fasta", callback_data, total_reads, n_consumed);
-            } catch (...) {
-                throw;
-            }
-        }
-
     } // while
 
     delete parser;
 }
 
-//
-// consume_string: run through every k-mer in the given string, & hash it.
-//
-
+/**
+ * Run through every k-mer in the given string, & hash it.
+ */
 unsigned int Hashbits::consume_string_overlap(const std::string &s,
         Hashbits &ht2)
 {
@@ -259,6 +260,26 @@ unsigned int Hashbits::consume_string_overlap(const std::string &s,
     }
 
     return n_consumed;
+}
+
+void Hashbits::update_from(const Hashbits &other)
+{
+    if (_ksize != other._ksize) {
+        throw khmer_exception("both nodegraphs must have same k size");
+    }
+    if (_tablesizes != other._tablesizes) {
+        throw khmer_exception("both nodegraphs must have same table sizes");
+    }
+    for (unsigned int table_num = 0; table_num < _n_tables; table_num++) {
+        Byte * me = _counts[table_num];
+        Byte * ot = other._counts[table_num];
+        HashIntoType tablesize = _tablesizes[table_num];
+        HashIntoType tablebytes = tablesize / 8 + 1;
+
+        for (HashIntoType index = 0; index < tablebytes; index++) {
+            me[index] |= ot[index];     // bitwise or
+        }
+    }
 }
 
 // vim: set sts=2 sw=2:

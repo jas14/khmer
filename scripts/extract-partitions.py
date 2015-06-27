@@ -1,8 +1,8 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python
 #
-# This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-# Copyright (C) Michigan State University, 2009-2014. It is licensed under
-# the three-clause BSD license; see doc/LICENSE.txt.
+# This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+# Copyright (C) Michigan State University, 2009-2015. It is licensed under
+# the three-clause BSD license; see LICENSE.
 # Contact: khmer-project@idyll.org
 #
 # pylint: disable=invalid-name,missing-docstring
@@ -18,14 +18,16 @@ Use '-h' for parameter help.
 @CTB note that if threshold is != 1, those sequences will not be output
 by output_unassigned...
 """
+from __future__ import print_function
 
 import sys
 import screed
 import argparse
 import textwrap
 import khmer
-from khmer.file import check_file_status, check_space
+from khmer.kfile import check_input_files, check_space
 from khmer.khmer_args import info
+from khmer.utils import write_record
 
 DEFAULT_MAX_SIZE = int(1e6)
 DEFAULT_THRESHOLD = 5
@@ -36,13 +38,6 @@ def read_partition_file(filename):
                                           (filename, parse_description=False)):
         _, partition_id = record.name.rsplit('\t', 1)
         yield record_index, record, int(partition_id)
-
-
-def output_single(read):
-    if hasattr(read, 'accuracy'):
-        return "@%s\n%s\n+\n%s\n" % (read.name, read.sequence, read.accuracy)
-    else:
-        return ">%s\n%s\n" % (read.name, read.sequence)
 
 
 def get_parser():
@@ -79,8 +74,10 @@ def get_parser():
     parser.add_argument('--output-unassigned', '-U', default=False,
                         action='store_true',
                         help='Output unassigned sequences, too')
-    parser.add_argument('--version', action='version', version='%(prog)s '
-                        + khmer.__version__)
+    parser.add_argument('--version', action='version', version='%(prog)s ' +
+                        khmer.__version__)
+    parser.add_argument('-f', '--force', default=False, action='store_true',
+                        help='Overwrite output file if it exists')
     return parser
 
 
@@ -94,24 +91,28 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
     n_unassigned = 0
 
     for infile in args.part_filenames:
-        check_file_status(infile)
+        check_input_files(infile, args.force)
 
-    check_space(args.part_filenames)
+    check_space(args.part_filenames, args.force)
 
-    print '---'
-    print 'reading partitioned files:', repr(args.part_filenames)
+    print('---', file=sys.stderr)
+    print('reading partitioned files:', repr(
+        args.part_filenames), file=sys.stderr)
     if args.output_groups:
-        print 'outputting to files named "%s.groupN.fa"' % args.prefix
-        print 'min reads to keep a partition:', args.min_part_size
-        print 'max size of a group file:', args.max_size
+        print('outputting to files named "%s.groupN.fa"' %
+              args.prefix, file=sys.stderr)
+        print('min reads to keep a partition:',
+              args.min_part_size, file=sys.stderr)
+        print('max size of a group file:', args.max_size, file=sys.stderr)
     else:
-        print 'NOT outputting groups! Beware!'
+        print('NOT outputting groups! Beware!', file=sys.stderr)
 
     if args.output_unassigned:
-        print 'outputting unassigned reads to "%s.unassigned.fa"' % args.prefix
-
-    print 'partition size distribution will go to %s' % distfilename
-    print '---'
+        print('outputting unassigned reads to "%s.unassigned.fa"' %
+              args.prefix, file=sys.stderr)
+    print('partition size distribution will go to %s'
+          % distfilename, file=sys.stderr)
+    print('---', file=sys.stderr)
 
     #
 
@@ -119,7 +120,7 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
     is_fastq = False
 
     for index, read, pid in read_partition_file(args.part_filenames[0]):
-        if hasattr(read, 'accuracy'):
+        if hasattr(read, 'quality'):
             suffix = 'fq'
             is_fastq = True
         break
@@ -127,10 +128,10 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
     for filename in args.part_filenames:
         for index, read, pid in read_partition_file(filename):
             if is_fastq:
-                assert hasattr(read, 'accuracy'), \
+                assert hasattr(read, 'quality'), \
                     "all input files must be FASTQ if the first one is"
             else:
-                assert not hasattr(read, 'accuracy'), \
+                assert not hasattr(read, 'quality'), \
                     "all input files must be FASTA if the first one is"
 
             break
@@ -142,14 +143,14 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
     for filename in args.part_filenames:
         for index, read, pid in read_partition_file(filename):
             if index % 100000 == 0:
-                print '...', index
+                print('...', index, file=sys.stderr)
 
             count[pid] = count.get(pid, 0) + 1
 
             if pid == 0:
                 n_unassigned += 1
                 if args.output_unassigned:
-                    print >>unassigned_fp, output_single(read)
+                    write_record(read, unassigned_fp)
 
     if args.output_unassigned:
         unassigned_fp.close()
@@ -159,7 +160,7 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
 
     # develop histogram of partition sizes
     dist = {}
-    for pid, size in count.items():
+    for pid, size in list(count.items()):
         dist[size] = dist.get(size, 0) + 1
 
     # output histogram
@@ -177,7 +178,7 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
         sys.exit(0)
 
     # sort groups by size
-    divvy = sorted(count.items(), key=lambda y: y[1])
+    divvy = sorted(list(count.items()), key=lambda y: y[1])
     divvy = [y for y in divvy if y[1] > args.min_part_size]
 
     # divvy up into different groups, based on having max_size sequences
@@ -205,9 +206,9 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
             # print 'group_d', partition_id, group_n
         group_n += 1
 
-    print '%d groups' % group_n
+    print('%d groups' % group_n, file=sys.stderr)
     if group_n == 0:
-        print 'nothing to output; exiting!'
+        print('nothing to output; exiting!', file=sys.stderr)
         return
 
     # open a bunch of output files for the different groups
@@ -225,7 +226,7 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
         for index, read, partition_id in read_partition_file(filename):
             total_seqs += 1
             if index % 100000 == 0:
-                print '...x2', index
+                print('...x2', index, file=sys.stderr)
 
             if partition_id == 0:
                 continue
@@ -239,19 +240,22 @@ def main():  # pylint: disable=too-many-locals,too-many-branches
 
             outfp = group_fps[group_n]
 
-            outfp.write(output_single(read))
+            write_record(read, outfp)
             part_seqs += 1
 
-    print '---'
-    print 'Of %d total seqs,' % total_seqs
-    print 'extracted %d partitioned seqs into group files,' % part_seqs
-    print 'discarded %d sequences from small partitions (see -m),' % \
-        toosmall_parts
-    print 'and found %d unpartitioned sequences (see -U).' % n_unassigned
-    print ''
-    print 'Created %d group files named %s.groupXXXX.%s' % (len(group_fps),
-                                                            args.prefix,
-                                                            suffix)
+    print('---', file=sys.stderr)
+    print('Of %d total seqs,' % total_seqs, file=sys.stderr)
+    print('extracted %d partitioned seqs into group files,' %
+          part_seqs, file=sys.stderr)
+    print('discarded %d sequences from small partitions (see -m),' %
+          toosmall_parts, file=sys.stderr)
+    print('and found %d unpartitioned sequences (see -U).' %
+          n_unassigned, file=sys.stderr)
+    print('', file=sys.stderr)
+    print('Created %d group files named %s.groupXXXX.%s' %
+          (len(group_fps),
+           args.prefix,
+           suffix), file=sys.stderr)
 
 if __name__ == '__main__':
     main()

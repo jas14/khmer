@@ -1,7 +1,7 @@
 //
-// This file is part of khmer, http://github.com/ged-lab/khmer/, and is
-// Copyright (C) Michigan State University, 2009-2014. It is licensed under
-// the three-clause BSD license; see doc/LICENSE.txt.
+// This file is part of khmer, https://github.com/dib-lab/khmer/, and is
+// Copyright (C) Michigan State University, 2009-2015. It is licensed under
+// the three-clause BSD license; see LICENSE.
 // Contact: khmer-project@idyll.org
 //
 
@@ -10,6 +10,8 @@
 #include "read_parsers.hh"
 
 #include <sstream>
+#include <errno.h>
+#include <assert.h>
 
 #define IO_BUF_SIZE 250*1000*1000
 #define BIG_TRAVERSALS_ARE 200
@@ -69,8 +71,8 @@ void SubsetPartition::count_partitions(
 
 
 size_t SubsetPartition::output_partitioned_file(
-    const std::string	infilename,
-    const std::string	outputfile,
+    const std::string	&infilename,
+    const std::string	&outputfile,
     bool		output_unassigned,
     CallbackFn		callback,
     void *		callback_data)
@@ -131,11 +133,11 @@ size_t SubsetPartition::output_partitioned_file(
             }
 
             if (partition_id > 0 || output_unassigned) {
-                if (read.accuracy.length()) { // FASTQ
+                if (read.quality.length()) { // FASTQ
                     outfile << "@" << read.name << "\t" << partition_id
                             << "\n";
                     outfile << seq << "\n+\n";
-                    outfile << read.accuracy << "\n";
+                    outfile << read.quality << "\n";
                 } else {		// FASTA
                     outfile << ">" << read.name << "\t" << partition_id;
                     outfile << "\n" << seq << "\n";
@@ -144,7 +146,7 @@ size_t SubsetPartition::output_partitioned_file(
 #ifdef VALIDATE_PARTITIONS
             std::cout << "checking: " << read.name << "\n";
             if (!is_single_partition(seq)) {
-                throw std::exception();
+                throw khmer_exception();
             }
 #endif // VALIDATE_PARTITIONS
 
@@ -172,7 +174,7 @@ size_t SubsetPartition::output_partitioned_file(
 }
 
 unsigned int SubsetPartition::find_unpart(
-    const std::string	infilename,
+    const std::string	&infilename,
     bool		traverse,
     bool		stop_big_traversals,
     CallbackFn		callback,
@@ -478,7 +480,7 @@ void SubsetPartition::find_all_tags(
 
         if (!(breadth >= cur_breadth)) { // keep track of watermark, for
             // debugging.
-            throw std::exception();
+            throw khmer_exception();
         }
         if (breadth > cur_breadth) {
             cur_breadth = breadth;
@@ -766,7 +768,7 @@ void SubsetPartition::find_all_tags_truncate_on_abundance(
         // @cswelcher Do these lines actually do anything?
         if (!(breadth >= cur_breadth)) { // keep track of watermark, for
             // debugging.
-            throw std::exception();
+            throw khmer_exception();
         }
         if (breadth > cur_breadth) {
             cur_breadth = breadth;
@@ -991,7 +993,7 @@ void SubsetPartition::set_partition_id(
 {
     HashIntoType kmer;
     if (!(kmer_s.length() >= _ht->ksize())) {
-        throw std::exception();
+        throw khmer_exception();
     }
     kmer = _hash(kmer_s.c_str(), _ht->ksize());
 
@@ -1027,7 +1029,7 @@ PartitionID SubsetPartition::assign_partition_id(
     PartitionID return_val = 0;
 
     // did we find a tagged kmer?
-    if (tagged_kmers.size() >= 1) {
+    if (!tagged_kmers.empty()) {
         PartitionID * pp = _join_partitions_by_tags(tagged_kmers, kmer);
         return_val = *pp;
     } else {
@@ -1161,7 +1163,7 @@ PartitionID SubsetPartition::get_partition_id(std::string kmer_s)
 {
     HashIntoType kmer;
     if (!(kmer_s.length() >= _ht->ksize())) {
-        throw std::exception();
+        throw khmer_exception();
     }
     kmer = _hash(kmer_s.c_str(), _ht->ksize());
 
@@ -1254,6 +1256,7 @@ void SubsetPartition::_merge_other(
 void SubsetPartition::merge_from_disk(string other_filename)
 {
     ifstream infile;
+    unsigned long long expected_pmap_size;
 
     // configure ifstream to raise exceptions for everything.
     infile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
@@ -1267,26 +1270,33 @@ void SubsetPartition::merge_from_disk(string other_filename)
         } else {
             err = "Unknown error in opening file: " + other_filename;
         }
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 
     try {
         unsigned int save_ksize = 0;
+        char signature[4];
         unsigned char version, ht_type;
 
+        infile.read(signature, 4);
         infile.read((char *) &version, 1);
         infile.read((char *) &ht_type, 1);
-        if (!(version == SAVED_FORMAT_VERSION)) {
+        if (!(std::string(signature, 4) == SAVED_SIGNATURE)) {
+            std::ostringstream err;
+            err << "Incorrect file signature " << signature
+                << " while reading subset pmap from " << other_filename
+                << " Should be: " << SAVED_SIGNATURE;
+            throw khmer_file_exception(err.str());
+        } else if (!(version == SAVED_FORMAT_VERSION)) {
             std::ostringstream err;
             err << "Incorrect file format version " << (int) version
                 << " while reading subset pmap from " << other_filename;
-            throw khmer_file_exception(err.str().c_str());
-        }
-        else if (!(ht_type == SAVED_SUBSET)) {
+            throw khmer_file_exception(err.str());
+        } else if (!(ht_type == SAVED_SUBSET)) {
             std::ostringstream err;
             err << "Incorrect file format type " << (int) ht_type
                 << " while reading subset pmap from " << other_filename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
 
         infile.read((char *) &save_ksize, sizeof(save_ksize));
@@ -1294,12 +1304,14 @@ void SubsetPartition::merge_from_disk(string other_filename)
             std::ostringstream err;
             err << "Incorrect k-mer size " << save_ksize
                 << " while reading subset pmap from " << other_filename;
-            throw khmer_file_exception(err.str().c_str());
+            throw khmer_file_exception(err.str());
         }
+
+        infile.read((char *) &expected_pmap_size, sizeof(expected_pmap_size));
     } catch (std::ifstream::failure &e) {
         std::string err;
         err = "Unknown error reading header info from: " + other_filename;
-        throw khmer_file_exception(err.c_str());
+        throw khmer_file_exception(err);
     }
 
     char * buf = new char[IO_BUF_SIZE];
@@ -1332,9 +1344,10 @@ void SubsetPartition::merge_from_disk(string other_filename)
             // _nothing_.  Note that the while loop exits on EOF.
 
             if (infile.gcount() == 0) {
+                delete[] buf;
                 std::string err;
                 err = "Unknown error reading data from: " + other_filename;
-                throw khmer_file_exception(err.c_str());
+                throw khmer_file_exception(err);
             }
         }
 
@@ -1350,21 +1363,21 @@ void SubsetPartition::merge_from_disk(string other_filename)
             diskp = (PartitionID *) (buf + i);
             i += sizeof(PartitionID);
 
-            if (!(*diskp != 0)) {		// sanity check.
-                throw std::exception();
-            }
+            assert((*diskp != 0)); // sanity check!
 
             _merge_other(*kmer_p, *diskp, diskp_to_pp);
 
             loaded++;
         }
-        if (!(i == n_bytes)) {
-            throw std::exception();
-        }
+        assert(i == n_bytes);
         memcpy(buf, buf + n_bytes, remainder);
     }
-
     delete[] buf;
+
+    if (loaded != expected_pmap_size) {
+        throw khmer_file_exception("error loading partitionmap - "
+                                   "invalid # of items");
+    }
 }
 
 // Save a partition map to disk.
@@ -1374,6 +1387,7 @@ void SubsetPartition::save_partitionmap(string pmap_filename)
     ofstream outfile(pmap_filename.c_str(), ios::binary);
 
     unsigned char version = SAVED_FORMAT_VERSION;
+    outfile.write(SAVED_SIGNATURE, 4);
     outfile.write((const char *) &version, 1);
 
     unsigned char ht_type = SAVED_SUBSET;
@@ -1381,6 +1395,9 @@ void SubsetPartition::save_partitionmap(string pmap_filename)
 
     unsigned int save_ksize = _ht->ksize();
     outfile.write((const char *) &save_ksize, sizeof(save_ksize));
+
+    unsigned long long pmap_size = partition_map.size();
+    outfile.write((const char *) &pmap_size, sizeof(pmap_size));
 
     ///
 
@@ -1419,6 +1436,10 @@ void SubsetPartition::save_partitionmap(string pmap_filename)
     if (n_bytes) {
         outfile.write(buf, n_bytes);
     }
+    if (outfile.fail()) {
+        delete[] buf;
+        throw khmer_file_exception(strerror(errno));
+    }
     outfile.close();
 
     delete[] buf;
@@ -1442,7 +1463,7 @@ void SubsetPartition::_validate_pmap()
 
         if (pp_id != NULL) {
             if (!(*pp_id >= 1) || !(*pp_id < next_partition_id)) {
-                throw std::exception();
+                throw khmer_exception();
             }
         }
     }
@@ -1453,7 +1474,7 @@ void SubsetPartition::_validate_pmap()
         PartitionPtrSet *s = (*ri).second;
 
         if (!(s != NULL)) {
-            throw std::exception();
+            throw khmer_exception();
         }
 
         for (PartitionPtrSet::const_iterator si = s->begin(); si != s->end();
@@ -1462,7 +1483,7 @@ void SubsetPartition::_validate_pmap()
             pp = *si;
 
             if (!(p == *pp)) {
-                throw std::exception();
+                throw khmer_exception();
             }
         }
     }
@@ -1626,7 +1647,7 @@ unsigned long long SubsetPartition::repartition_largest_partition(
     --di;
 
     if (d.empty()) {
-        throw std::exception();
+        throw khmer_exception();
     }
 
     for (PartitionCountMap::const_iterator cmi = cm.begin(); cmi != cm.end();
@@ -1636,7 +1657,7 @@ unsigned long long SubsetPartition::repartition_largest_partition(
         }
     }
     if (!(biggest_p != 0)) {
-        throw std::exception();
+        throw khmer_exception();
     }
 
 #if VERBOSE_REPARTITION
